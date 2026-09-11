@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Apply a licence header to new files, on a human's explicit assertion of authorship.
 
-Invoked by the `/eo-licence` comment command. The command means "we wrote these";
+Invoked by the `/std-licence` comment command. The command means "we wrote these";
 this script decides *which* header follows from that, per path, and refuses anything
 it cannot determine.
 
-  apply-eo-licence.py <base-sha> <head-sha> [explicit paths...]
+  apply-std-licence.py <base-sha> <head-sha> [explicit paths...]
 
 Prints a markdown report of what was applied and what was refused, so a wrong
 inference is visible rather than silent.

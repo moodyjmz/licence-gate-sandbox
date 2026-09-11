@@ -1,6 +1,6 @@
 name: Apply licence headers
 
-# Triggered by a human commenting /eo-licence. That command is an ASSERTION -
+# Triggered by a human commenting /std-licence. That command is an ASSERTION -
 # "we wrote these" - which no machine can make. This workflow records the claim,
 # attributes it, and derives the licence from the path. It never decides authorship.
 
@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   apply:
-    if: github.event.issue.pull_request && contains(github.event.comment.body, '/eo-licence')
+    if: github.event.issue.pull_request && contains(github.event.comment.body, '/std-licence')
     runs-on: ubuntu-latest
     concurrency:
       group: eolicence-${{ github.event.issue.number }}
@@ -36,14 +36,14 @@ jobs:
             if (!['admin','write','maintain'].includes(perm)) {
               await github.rest.issues.createComment({owner, repo,
                 issue_number: context.issue.number,
-                body: `@${who} — \`/eo-licence\` needs write access.`});
+                body: `@${who} — \`/std-licence\` needs write access.`});
               core.setFailed('insufficient permission');
               return;
             }
             // Comment text is data, never shell input. Paths go to a file.
             const body = context.payload.comment.body || '';
-            const line = body.split('\n').find(l => l.includes('/eo-licence')) || '';
-            const paths = line.replace('/eo-licence','').trim().split(/\s+/).filter(Boolean);
+            const line = body.split('\n').find(l => l.includes('/std-licence')) || '';
+            const paths = line.replace('/std-licence','').trim().split(/\s+/).filter(Boolean);
             fs.writeFileSync('/tmp/explicit-paths.txt', paths.join('\n'));
             const pr = await github.rest.pulls.get(
               {owner, repo, pull_number: context.issue.number});
@@ -65,7 +65,7 @@ jobs:
         id: apply
         working-directory: scripts
         run: |
-          python3 apply-eo-licence.py \
+          python3 apply-std-licence.py \
             "${{ steps.ctx.outputs.base_sha }}" HEAD > /tmp/report.md
           cat /tmp/report.md
 
