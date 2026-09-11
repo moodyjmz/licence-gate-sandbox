@@ -82,13 +82,16 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
-          git commit -s -m "chore(license): add modification notices
-
-Applied mechanically on request. Each notice is appended to an existing
-header block; no existing licence text, copyright line or SPDX tag is
-altered.
-
-Requested-by: ${TRIGGERED_BY}"
+          {
+            echo "chore(license): add modification notices"
+            echo
+            echo "Applied mechanically on request. Each notice is appended to an"
+            echo "existing header block; no existing licence text, copyright line"
+            echo "or SPDX tag is altered."
+            echo
+            echo "Requested-by: ${TRIGGERED_BY}"
+          } > /tmp/commit-msg.txt
+          git commit -s -F /tmp/commit-msg.txt
           git push origin "HEAD:${{ steps.auth.outputs.ref }}"
 
       - name: Report
