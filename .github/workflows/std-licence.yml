@@ -1,134 +1,17 @@
 name: Apply licence headers
-
-# Triggered by a human commenting /std-licence. That command is an ASSERTION -
-# "we wrote these" - which no machine can make. This workflow records the claim,
-# attributes it, and derives the licence from the path. It never decides authorship.
-
 on:
   issue_comment:
     types: [created]
-
 permissions:
   contents: write
   pull-requests: write
-
 jobs:
   apply:
     if: github.event.issue.pull_request && contains(github.event.comment.body, '/std-licence')
     runs-on: ubuntu-latest
     concurrency:
-      group: eolicence-${{ github.event.issue.number }}
+      group: stdlicence-${{ github.event.issue.number }}
     steps:
-      - name: Authorise and extract the asserted paths
-        id: ctx
-        uses: actions/github-script@v7
+      - uses: moodyjmz/licence-gate-tooling/actions/std-licence@b95d27ce04c9e6712e69a0c037b7f94aebf82fdc
         with:
-          script: |
-            const fs = require('fs');
-            const {owner, repo} = context.repo;
-            const who = context.payload.comment.user.login;
-            let perm = 'none';
-            try {
-              const r = await github.rest.repos.getCollaboratorPermissionLevel(
-                {owner, repo, username: who});
-              perm = r.data.permission;
-            } catch (e) { perm = 'none'; }
-            if (!['admin','write','maintain'].includes(perm)) {
-              // Silence is the answer. See the note in auto-fix.yml: a reply tells a
-              // prober the command exists and that permission was the only obstacle.
-              // Recorded where only people with repository access can see it.
-              core.warning(
-                `IGNORED /std-licence from ${who} (permission: ${perm}) on #${context.issue.number}`);
-              await core.summary
-                .addHeading('Ignored an unauthorised command', 3)
-                .addTable([
-                  [{data: 'Command', header: true}, {data: 'Commenter', header: true},
-                   {data: 'Permission', header: true}, {data: 'Pull request', header: true}],
-                  ['/std-licence', who, perm || 'none', `#${context.issue.number}`],
-                ])
-                .write();
-              core.setOutput('ok', 'false');
-              return;
-            }
-            core.setOutput('ok', 'true');
-            // Comment text is data, never shell input. Paths go to a file.
-            const body = context.payload.comment.body || '';
-            const line = body.split('\n').find(l => l.includes('/std-licence')) || '';
-            const paths = line.replace('/std-licence','').trim().split(/\s+/).filter(Boolean);
-            fs.writeFileSync('/tmp/explicit-paths.txt', paths.join('\n'));
-            const pr = await github.rest.pulls.get(
-              {owner, repo, pull_number: context.issue.number});
-            core.setOutput('ref', pr.data.head.ref);
-            core.setOutput('base_sha', pr.data.base.sha);
-            core.setOutput('same_repo',
-              String(pr.data.head.repo.full_name === `${owner}/${repo}`));
-
-      - name: Refuse forks
-        if: steps.ctx.outputs.ok == 'true' && steps.ctx.outputs.same_repo != 'true'
-        run: exit 1
-
-      # See the note in auto-fix.yml. Same rule, same reason. This must come BEFORE the
-      # pull request checkout: that checkout cleans the workspace, which removes this
-      # tree - hence the copy out to /tmp first.
-      - name: Check out the tooling from the default branch
-        if: steps.ctx.outputs.ok == 'true'
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.repository.default_branch }}
-          path: .tooling
-
-      - name: Copy the tooling out of the workspace
-        if: steps.ctx.outputs.ok == 'true'
-        run: |
-          mkdir -p /tmp/tooling
-          cp -r "$GITHUB_WORKSPACE/.tooling/scripts/." /tmp/tooling/
-
-      - uses: actions/checkout@v4
-        if: steps.ctx.outputs.ok == 'true'
-        with:
-          ref: ${{ steps.ctx.outputs.ref }}
-          fetch-depth: 0
-
-      - name: Apply
-        if: steps.ctx.outputs.ok == 'true'
-        id: apply
-        run: |
-          python3 /tmp/tooling/apply-std-licence.py \
-            "${{ steps.ctx.outputs.base_sha }}" HEAD > /tmp/report.md
-          cat /tmp/report.md
-
-      - name: Commit if anything changed
-        if: steps.ctx.outputs.ok == 'true'
-        env:
-          ASSERTED_BY: ${{ github.event.comment.user.login }}
-        run: |
-          if [ -z "$(git status --porcelain)" ]; then
-            echo "nothing to commit"; exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          {
-            echo "chore(license): add licence headers to new files"
-            echo
-            echo "Applied on an explicit assertion of authorship. The licence for"
-            echo "each file follows from its path; the copyright line reflects the"
-            echo "assertion below, which a machine cannot make and did not."
-            echo
-            echo "Authorship-asserted-by: ${ASSERTED_BY}"
-          } > /tmp/msg.txt
-          git commit -s -F /tmp/msg.txt
-          git push origin "HEAD:${{ steps.ctx.outputs.ref }}"
-
-      - name: Report
-        if: steps.ctx.outputs.ok == 'true'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('fs');
-            const {owner, repo} = context.repo;
-            const who = context.payload.comment.user.login;
-            const body = fs.readFileSync('/tmp/report.md','utf8');
-            await github.rest.issues.createComment({owner, repo,
-              issue_number: context.issue.number,
-              body: `**Authorship asserted by @${who}.**\n\n${body}`});
+          token: ${{ secrets.GITHUB_TOKEN }}

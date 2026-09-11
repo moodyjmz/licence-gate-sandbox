@@ -1,13 +1,12 @@
+# Thin caller. Trigger, permissions, checkout, pinned uses. Nothing else belongs here -
+# anything added below becomes editable by the pull requests this gate judges.
 name: Licence gate
-
 on:
   pull_request:
     types: [opened, synchronize, reopened]
-
 permissions:
   contents: read
   pull-requests: write
-
 jobs:
   gate:
     runs-on: ubuntu-latest
@@ -16,40 +15,8 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-
-      - name: Run the gate
-        id: gate
-        run: |
-          set +e
-          python3 scripts/licence-gate.py \
-            "${{ github.event.pull_request.base.sha }}" \
-            "${{ github.event.pull_request.head.sha }}" > /tmp/report.md
-          echo "exit=$?" >> "$GITHUB_OUTPUT"
-          cat /tmp/report.md
-
-      - name: Post or update the review comment
-        uses: actions/github-script@v7
-        env:
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      - uses: moodyjmz/licence-gate-tooling/actions/gate@b95d27ce04c9e6712e69a0c037b7f94aebf82fdc
         with:
-          script: |
-            const fs = require('fs');
-            const body = fs.readFileSync('/tmp/report.md', 'utf8');
-            const marker = '<!-- licence-gate -->';
-            const sha = process.env.HEAD_SHA;
-            const text = `${marker}\n## Licence gate\n\n${body}\n\n---\n<sub>Evaluated at \`${sha.substring(0,9)}\`. A disposition made against an earlier commit does not carry over.</sub>`;
-            const {owner, repo} = context.repo;
-            const issue_number = context.issue.number;
-            const comments = await github.rest.issues.listComments({owner, repo, issue_number});
-            const mine = comments.data.find(c => c.body && c.body.includes(marker));
-            if (mine) {
-              await github.rest.issues.updateComment({owner, repo, comment_id: mine.id, body: text});
-            } else {
-              await github.rest.issues.createComment({owner, repo, issue_number, body: text});
-            }
-
-      - name: Fail if blocking checks failed
-        if: steps.gate.outputs.exit != '0'
-        run: |
-          echo "Blocking licence-gate checks failed. See the review comment."
-          exit 1
+          token: ${{ secrets.GITHUB_TOKEN }}
+          base-sha: ${{ github.event.pull_request.base.sha }}
+          head-sha: ${{ github.event.pull_request.head.sha }}
