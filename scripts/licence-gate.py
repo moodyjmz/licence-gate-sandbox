@@ -28,20 +28,35 @@ def sh(*args):
 
 
 def changed_files(base, head):
+    """Classify the diff.
+
+    Renames matter more than they look. `git diff --name-status` reports a delete
+    plus an add of similar content as a single `R<score>` line with TWO paths - and
+    a rename is the commonest shape a replacement takes: swapping one asset for a
+    differently-named one. An earlier version handled only A/D/M, so renames fell
+    through silently and produced no candidate at all. Under-detection is the
+    failure nobody notices, which is exactly why it is the one to guard against.
+    """
     out = sh("git", "diff", "--name-status", f"{base}..{head}")
-    added, modified, deleted = [], [], []
+    added, modified, deleted, renamed = [], [], [], []
     for line in out.strip().split("\n"):
         if not line:
             continue
         parts = line.split("\t")
-        status, path = parts[0], parts[-1]
+        status = parts[0]
+        if status.startswith("R") or status.startswith("C"):
+            # R<score>\told\tnew
+            if len(parts) >= 3:
+                renamed.append((parts[1], parts[2]))
+            continue
+        path = parts[-1]
         if status.startswith("A"):
             added.append(path)
         elif status.startswith("D"):
             deleted.append(path)
         elif status.startswith("M"):
             modified.append(path)
-    return added, modified, deleted
+    return added, modified, deleted, renamed
 
 
 def check_b(base, head):
@@ -70,9 +85,11 @@ def check_a(base, head, modified):
     return missing
 
 
-def check_c(added, modified, deleted):
+def check_c(added, modified, deleted, renamed):
     """Candidate replacement events. Over-detects by design."""
     cands = []
+    for old, new in renamed:
+        cands.append((old, f"renamed to `{new}` - the commonest shape of a replacement"))
     for p in deleted:
         cands.append((p, "file deleted"))
     for p in added:
@@ -91,16 +108,16 @@ def main(argv):
         print(__doc__.strip())
         return 2
     base, head = argv
-    added, modified, deleted = changed_files(base, head)
+    added, modified, deleted, renamed = changed_files(base, head)
 
     if candidates_only:
-        for p, _ in check_c(added, modified, deleted):
+        for p, _ in check_c(added, modified, deleted, renamed):
             print(p)
         return 0
 
     b = check_b(base, head)
     a = check_a(base, head, modified)
-    c = check_c(added, modified, deleted)
+    c = check_c(added, modified, deleted, renamed)
 
     out = []
     blocking = bool(a or b)
