@@ -6,5 +6,5 @@
  */
 
 export function panel() {
-  return "panel";
+  return "panel v3";
 }
