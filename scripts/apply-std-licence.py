@@ -14,14 +14,7 @@ inference is visible rather than silent.
 import subprocess
 import sys
 
-from licence_map import APPLY, classify, header_lines
-
-COMMENT_STYLE = {
-    ".js": "//", ".ts": "//", ".c": "//", ".h": "//", ".cpp": "//",
-    ".java": "//", ".go": "//", ".css": "/*", ".less": "/*",
-    ".py": "#", ".sh": "#", ".rb": "#",
-    ".html": "<!--", ".htm": "<!--", ".svg": "<!--",
-}
+from licence_map import APPLY, classify, insert_header
 
 
 def sh(*args):
@@ -49,16 +42,9 @@ def has_header(path):
 
 
 def write_header(path, licence):
-    ext = "." + path.rsplit(".", 1)[-1].lower()
-    style = COMMENT_STYLE.get(ext, "#")
-    if style == "/*":
-        block = ["/*"] + [f" * {l.split(' ', 1)[1]}" for l in header_lines(licence, "//")] + [" */"]
-    elif style == "<!--":
-        block = ["<!--"] + [f"  {l.split(' ', 1)[1]}" for l in header_lines(licence, "//")] + ["-->"]
-    else:
-        block = header_lines(licence, style)
+    """Pure decision in licence_map.insert_header; this only does the file IO."""
     content = open(path, encoding="utf-8").read()
-    open(path, "w", encoding="utf-8").write("\n".join(block) + "\n" + content)
+    open(path, "w", encoding="utf-8").write(insert_header(content, path, licence))
 
 
 def main(argv):

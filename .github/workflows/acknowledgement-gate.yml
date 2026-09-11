@@ -92,33 +92,54 @@ jobs:
             const comments = await github.paginate(github.rest.issues.listComments,
               {owner, repo, issue_number: number, per_page: 100});
 
-            const acks = comments.filter(c => /^\s*example-log:/mi.test(c.body || ''));
-            if (acks.length === 0) {
-              await setStatus('pending',
-                `${candidates.length} candidate(s) await a reviewer disposition.`);
+            const shaped = comments.filter(c => /^\s*example-log:/mi.test(c.body || ''));
+
+            // Eligibility is decided BEFORE selection, and this ordering is the whole
+            // point. Taking the newest correctly-shaped comment and then testing whether
+            // its author was allowed hands anyone who can comment a veto: post one line
+            // of `example-log:` on a pull request that already carries a valid
+            // disposition and the gate fails for ever, because the only comment it will
+            // ever look at is theirs. Filter first, select second, and an ineligible
+            // comment is inert rather than obstructive.
+            const eligible = [];
+            const ignored = [];
+            for (const c of shaped) {
+              const login = c.user.login;
+              if (login === author) {
+                // Not an attack - the author acting in good faith. Distinguished from a
+                // stranger below so the reported reason stays useful to them.
+                ignored.push({login, why: 'is the pull request author'});
+                continue;
+              }
+              let perm = 'none';
+              try {
+                const r = await github.rest.repos.getCollaboratorPermissionLevel(
+                  {owner, repo, username: login});
+                perm = r.data.permission;
+              } catch (e) { perm = 'none'; }
+              if (!['admin', 'write', 'maintain'].includes(perm)) {
+                core.warning(
+                  `IGNORED disposition from ${login} (permission: ${perm}) on #${number}`);
+                ignored.push({login, why: `lacks write access (${perm})`});
+                continue;
+              }
+              eligible.push(c);
+            }
+
+            if (eligible.length === 0) {
+              // The reason is only ever reported for the author's own attempt. For a
+              // stranger the status stays exactly as it was before they commented -
+              // they learn nothing, and they have changed nothing.
+              const byAuthor = ignored.find(i => i.login === author);
+              await setStatus(byAuthor ? 'failure' : 'pending',
+                byAuthor
+                  ? `Disposition must come from a reviewer, not the pull request author (${author}).`
+                  : `${candidates.length} candidate(s) await a reviewer disposition.`);
               return;
             }
 
-            const ack = acks[acks.length - 1];
+            const ack = eligible[eligible.length - 1];
             const who = ack.user.login;
-
-            if (who === author) {
-              await setStatus('failure',
-                `Disposition must come from a reviewer, not the pull request author (${who}).`);
-              return;
-            }
-
-            let perm = 'none';
-            try {
-              const r = await github.rest.repos.getCollaboratorPermissionLevel(
-                {owner, repo, username: who});
-              perm = r.data.permission;
-            } catch (e) { perm = 'none'; }
-            if (!['admin', 'write', 'maintain'].includes(perm)) {
-              await setStatus('failure',
-                `${who} lacks write access; disposition must come from a reviewer.`);
-              return;
-            }
 
             // Staleness: an acknowledgement made before the current head does not carry
             // over. Otherwise the bypass is trivial - acknowledge a clean tree, then push.

@@ -42,12 +42,25 @@ jobs:
               perm = r.data.permission;
             } catch (e) { perm = 'none'; }
             if (!['admin', 'write', 'maintain'].includes(perm)) {
-              await github.rest.issues.createComment({owner, repo,
-                issue_number: context.issue.number,
-                body: `@${who} — \`/auto-fix\` needs write access to this repository.`});
-              core.setFailed(`${who} lacks write access`);
+              // Ignored in silence. Replying would confirm to someone probing that the
+              // command exists and that permission was the only thing in the way; the
+              // useful answer to an unauthorised caller is no answer at all. The
+              // refusal is still recorded - in the log and the run summary, both of
+              // which only people with repository access can read.
+              core.warning(
+                `IGNORED /auto-fix from ${who} (permission: ${perm}) on #${context.issue.number}`);
+              await core.summary
+                .addHeading('Ignored an unauthorised command', 3)
+                .addTable([
+                  [{data: 'Command', header: true}, {data: 'Commenter', header: true},
+                   {data: 'Permission', header: true}, {data: 'Pull request', header: true}],
+                  ['/auto-fix', who, perm || 'none', `#${context.issue.number}`],
+                ])
+                .write();
+              core.setOutput('ok', 'false');
               return;
             }
+            core.setOutput('ok', 'true');
             const pr = await github.rest.pulls.get(
               {owner, repo, pull_number: context.issue.number});
             core.setOutput('ref', pr.data.head.ref);
@@ -56,26 +69,47 @@ jobs:
               String(pr.data.head.repo.full_name === `${owner}/${repo}`));
 
       - name: Refuse forks
-        if: steps.auth.outputs.same_repo != 'true'
+        if: steps.auth.outputs.ok == 'true' && steps.auth.outputs.same_repo != 'true'
         run: |
           echo "Fork pull requests cannot be written to by this workflow."
           exit 1
 
+      # The pull request's own copy of these scripts is NOT trusted. This workflow holds
+      # contents:write, so running a script the pull request can edit would let anyone
+      # with write access execute arbitrary code under the workflow token - an
+      # escalation from "can push to a branch" to "can act as the workflow". The
+      # default branch is behind branch protection, so take the executable from there.
+      #
+      # This must come BEFORE the pull request checkout: that checkout cleans the
+      # workspace and would remove this tree, hence the copy out to /tmp.
+      - name: Check out the tooling from the default branch
+        if: steps.auth.outputs.ok == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: .tooling
+
+      - name: Copy the tooling out of the workspace
+        if: steps.auth.outputs.ok == 'true'
+        run: cp -r "$GITHUB_WORKSPACE/.tooling/scripts" /tmp/tooling
+
       - uses: actions/checkout@v4
+        if: steps.auth.outputs.ok == 'true'
         with:
           ref: ${{ steps.auth.outputs.ref }}
           fetch-depth: 0
 
       - name: Apply the fix
+        if: steps.auth.outputs.ok == 'true'
         id: fix
         run: |
-          python3 scripts/licence-gate.py --fix \
+          python3 /tmp/tooling/licence-gate.py --fix \
             "${{ steps.auth.outputs.base_sha }}" HEAD > /tmp/fixed.txt
           echo "count=$(wc -l < /tmp/fixed.txt | tr -d ' ')" >> "$GITHUB_OUTPUT"
           cat /tmp/fixed.txt
 
       - name: Commit and push
-        if: steps.fix.outputs.count != '0'
+        if: steps.auth.outputs.ok == 'true' && steps.fix.outputs.count != '0'
         env:
           TRIGGERED_BY: ${{ github.event.comment.user.login }}
         run: |
@@ -95,6 +129,7 @@ jobs:
           git push origin "HEAD:${{ steps.auth.outputs.ref }}"
 
       - name: Report
+        if: steps.auth.outputs.ok == 'true'
         uses: actions/github-script@v7
         env:
           COUNT: ${{ steps.fix.outputs.count }}

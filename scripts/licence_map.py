@@ -85,8 +85,55 @@ def classify(path, explicitly_named, has_header):
     return (APPLY, lic, "")
 
 
-def header_lines(licence, comment="//"):
+def header_texts(licence):
+    """The header's content, with no comment syntax. One place; everything else formats."""
     return [
-        f"{comment} SPDX-FileCopyrightText: {YEAR} {COPYRIGHT}",
-        f"{comment} SPDX-License-Identifier: {licence}",
+        f"SPDX-FileCopyrightText: {YEAR} {COPYRIGHT}",
+        f"SPDX-License-Identifier: {licence}",
     ]
+
+
+def header_lines(licence, comment="//"):
+    return [f"{comment} {t}" for t in header_texts(licence)]
+
+
+# How each extension spells a comment. The value is the OPENING token; block styles
+# are recognised by it and closed accordingly.
+COMMENT_STYLE = {
+    ".js": "//", ".ts": "//", ".c": "//", ".h": "//", ".cpp": "//",
+    ".java": "//", ".go": "//", ".css": "/*", ".less": "/*",
+    ".py": "#", ".sh": "#", ".rb": "#",
+    ".html": "<!--", ".htm": "<!--", ".svg": "<!--",
+}
+
+
+def header_block(path, licence):
+    """The header for this file, as lines, in the comment syntax its type uses."""
+    ext = "." + path.rsplit(".", 1)[-1].lower()
+    style = COMMENT_STYLE.get(ext, "#")
+    texts = header_texts(licence)
+    if style == "/*":
+        return ["/*"] + [f" * {t}" for t in texts] + [" */"]
+    if style == "<!--":
+        return ["<!--"] + [f"  {t}" for t in texts] + ["-->"]
+    return [f"{style} {t}" for t in texts]
+
+
+# Lines that MUST stay first in the file. Prepending above a shebang stops a script
+# executing; prepending above an XML declaration makes the document invalid. Both
+# were live risks - .sh, .py and .svg are all in the table above - and both fail
+# quietly, in the sense that the header looks perfectly correct in the diff.
+_MUST_STAY_FIRST = (
+    re.compile(r"^#!"),
+    re.compile(r"^<\?xml[\s?]", re.I),
+)
+
+
+def insert_header(content, path, licence):
+    """Return `content` with the header inserted at the first position it may occupy."""
+    lines = content.split("\n")
+    at = 0
+    if lines and any(p.match(lines[0]) for p in _MUST_STAY_FIRST):
+        at = 1
+    block = header_block(path, licence)
+    return "\n".join(lines[:at] + block + lines[at:])

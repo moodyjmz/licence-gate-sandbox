@@ -9,7 +9,8 @@ obvious gets deleted by someone six months from now who cannot see why it matter
 
 import unittest
 
-from licence_map import APPLY, REFUSE, classify, licence_for
+from licence_map import (APPLY, REFUSE, classify, header_block,
+                         insert_header, licence_for)
 
 
 class TestLicenceForPath(unittest.TestCase):
@@ -92,6 +93,67 @@ class TestMixedPullRequest(unittest.TestCase):
             ("assets/spinner.svg", REFUSE, None),
             ("vendor/lib.js", REFUSE, None),
         ])
+
+
+class TestHeaderFormatting(unittest.TestCase):
+    """The comment syntax was previously produced by splitting a "// ..." string on its
+    first space and keeping the remainder. It worked, but any edit to the header text
+    would have broken block comments silently - and a malformed comment in a .css or
+    .svg file is a syntax error in someone else's build, not ours."""
+
+    def test_line_comment_styles(self):
+        for path in ("src/a.js", "src/a.go", "src/a.py"):
+            with self.subTest(path=path):
+                block = header_block(path, "Example-1.0")
+                self.assertTrue(all(l.startswith(("//", "#")) for l in block), block)
+                self.assertEqual(len(block), 2)
+
+    def test_block_comment_is_opened_and_closed(self):
+        block = header_block("src/a.css", "Example-1.0")
+        self.assertEqual(block[0], "/*")
+        self.assertEqual(block[-1], " */")
+        self.assertIn("SPDX-License-Identifier: Example-1.0", "\n".join(block))
+
+    def test_markup_comment_is_opened_and_closed(self):
+        block = header_block("assets/a.svg", "Example-1.0")
+        self.assertEqual(block[0], "<!--")
+        self.assertEqual(block[-1], "-->")
+        self.assertNotIn("//", "\n".join(block))
+
+    def test_unknown_extension_falls_back_to_hash(self):
+        self.assertTrue(header_block("thing.conf", "Example-1.0")[0].startswith("# "))
+
+
+class TestInsertionPoint(unittest.TestCase):
+    """Prepending unconditionally is the obvious implementation and it is wrong for
+    two file types this tool actually handles."""
+
+    def test_shebang_stays_on_line_one(self):
+        """A header above the shebang stops the script executing - and the diff looks
+        perfectly correct, so nobody spots it until something fails to run."""
+        out = insert_header("#!/bin/sh\necho hi\n", "scripts/x.sh", "Example-1.0")
+        self.assertTrue(out.startswith("#!/bin/sh\n"))
+        self.assertIn("SPDX-License-Identifier: Example-1.0", out)
+
+    def test_xml_declaration_stays_on_line_one(self):
+        """An XML declaration must be the first thing in the document; a comment above
+        it makes the SVG invalid."""
+        out = insert_header('<?xml version="1.0"?>\n<svg/>\n', "a.svg", "Example-1.0")
+        self.assertTrue(out.startswith('<?xml version="1.0"?>\n'))
+        self.assertIn("<!--", out)
+
+    def test_ordinary_file_gets_the_header_first(self):
+        out = insert_header("const a = 1;\n", "src/a.js", "Example-1.0")
+        self.assertTrue(out.startswith("// SPDX-FileCopyrightText:"))
+
+    def test_original_content_is_never_lost(self):
+        for content, path in [("#!/usr/bin/env python3\nx = 1\n", "s.py"),
+                              ("body { color: red }\n", "a.css"),
+                              ("<svg/>\n", "a.svg")]:
+            with self.subTest(path=path):
+                out = insert_header(content, path, "Example-1.0")
+                for line in content.strip().split("\n"):
+                    self.assertIn(line, out)
 
 
 if __name__ == "__main__":

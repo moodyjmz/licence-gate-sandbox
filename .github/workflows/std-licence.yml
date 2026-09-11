@@ -34,12 +34,23 @@ jobs:
               perm = r.data.permission;
             } catch (e) { perm = 'none'; }
             if (!['admin','write','maintain'].includes(perm)) {
-              await github.rest.issues.createComment({owner, repo,
-                issue_number: context.issue.number,
-                body: `@${who} — \`/std-licence\` needs write access.`});
-              core.setFailed('insufficient permission');
+              // Silence is the answer. See the note in auto-fix.yml: a reply tells a
+              // prober the command exists and that permission was the only obstacle.
+              // Recorded where only people with repository access can see it.
+              core.warning(
+                `IGNORED /std-licence from ${who} (permission: ${perm}) on #${context.issue.number}`);
+              await core.summary
+                .addHeading('Ignored an unauthorised command', 3)
+                .addTable([
+                  [{data: 'Command', header: true}, {data: 'Commenter', header: true},
+                   {data: 'Permission', header: true}, {data: 'Pull request', header: true}],
+                  ['/std-licence', who, perm || 'none', `#${context.issue.number}`],
+                ])
+                .write();
+              core.setOutput('ok', 'false');
               return;
             }
+            core.setOutput('ok', 'true');
             // Comment text is data, never shell input. Paths go to a file.
             const body = context.payload.comment.body || '';
             const line = body.split('\n').find(l => l.includes('/std-licence')) || '';
@@ -53,23 +64,39 @@ jobs:
               String(pr.data.head.repo.full_name === `${owner}/${repo}`));
 
       - name: Refuse forks
-        if: steps.ctx.outputs.same_repo != 'true'
+        if: steps.ctx.outputs.ok == 'true' && steps.ctx.outputs.same_repo != 'true'
         run: exit 1
 
+      # See the note in auto-fix.yml. Same rule, same reason. This must come BEFORE the
+      # pull request checkout: that checkout cleans the workspace, which removes this
+      # tree - hence the copy out to /tmp first.
+      - name: Check out the tooling from the default branch
+        if: steps.ctx.outputs.ok == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: .tooling
+
+      - name: Copy the tooling out of the workspace
+        if: steps.ctx.outputs.ok == 'true'
+        run: cp -r "$GITHUB_WORKSPACE/.tooling/scripts" /tmp/tooling
+
       - uses: actions/checkout@v4
+        if: steps.ctx.outputs.ok == 'true'
         with:
           ref: ${{ steps.ctx.outputs.ref }}
           fetch-depth: 0
 
       - name: Apply
+        if: steps.ctx.outputs.ok == 'true'
         id: apply
-        working-directory: scripts
         run: |
-          python3 apply-std-licence.py \
+          python3 /tmp/tooling/apply-std-licence.py \
             "${{ steps.ctx.outputs.base_sha }}" HEAD > /tmp/report.md
           cat /tmp/report.md
 
       - name: Commit if anything changed
+        if: steps.ctx.outputs.ok == 'true'
         env:
           ASSERTED_BY: ${{ github.event.comment.user.login }}
         run: |
@@ -92,6 +119,7 @@ jobs:
           git push origin "HEAD:${{ steps.ctx.outputs.ref }}"
 
       - name: Report
+        if: steps.ctx.outputs.ok == 'true'
         uses: actions/github-script@v7
         with:
           script: |
