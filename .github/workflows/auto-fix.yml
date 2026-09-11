@@ -91,7 +91,9 @@ jobs:
 
       - name: Copy the tooling out of the workspace
         if: steps.auth.outputs.ok == 'true'
-        run: cp -r "$GITHUB_WORKSPACE/.tooling/scripts" /tmp/tooling
+        run: |
+          mkdir -p /tmp/tooling
+          cp -r "$GITHUB_WORKSPACE/.tooling/scripts/." /tmp/tooling/
 
       - uses: actions/checkout@v4
         if: steps.auth.outputs.ok == 'true'
@@ -137,6 +139,12 @@ jobs:
           script: |
             const {owner, repo} = context.repo;
             const n = process.env.COUNT;
+            if (!n) {
+              // The fix step did not report a count, so it did not complete. Claiming
+              // anything was applied here would be a false statement about the tree.
+              core.setFailed('auto-fix did not complete; nothing was applied');
+              return;
+            }
             const body = n === '0'
               ? 'Nothing to auto-fix — no modified file is missing its notice.'
               : `Applied the modification notice to ${n} file(s). Nothing existing was altered.\n\nNew files and altered licence lines are **not** auto-fixed; those need a human.`;

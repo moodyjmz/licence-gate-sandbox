@@ -79,7 +79,9 @@ jobs:
 
       - name: Copy the tooling out of the workspace
         if: steps.ctx.outputs.ok == 'true'
-        run: cp -r "$GITHUB_WORKSPACE/.tooling/scripts" /tmp/tooling
+        run: |
+          mkdir -p /tmp/tooling
+          cp -r "$GITHUB_WORKSPACE/.tooling/scripts/." /tmp/tooling/
 
       - uses: actions/checkout@v4
         if: steps.ctx.outputs.ok == 'true'
