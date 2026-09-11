@@ -1,0 +1,145 @@
+name: Acknowledgement gate
+
+# The register entry is a compliance judgement. CI cannot make it, and a contributor
+# should not be asked to. This gate does not evaluate the judgement - it only records,
+# verifiably, that a reviewer made one, against a specific commit, with their name on it.
+
+on:
+  issue_comment:
+    types: [created, edited]
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: read
+  statuses: write
+
+jobs:
+  verify:
+    # issue_comment fires for issues too; only act on pull requests
+    if: github.event_name == 'pull_request' || github.event.issue.pull_request
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ack-${{ github.event.issue.number || github.event.pull_request.number }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Resolve PR and candidates
+        id: ctx
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const {owner, repo} = context.repo;
+            const number = context.eventName === 'pull_request'
+              ? context.payload.pull_request.number
+              : context.payload.issue.number;
+            const pr = await github.rest.pulls.get({owner, repo, pull_number: number});
+            core.setOutput('number', String(number));
+            core.setOutput('head_sha', pr.data.head.sha);
+            core.setOutput('base_sha', pr.data.base.sha);
+            core.setOutput('author', pr.data.user.login);
+
+      - name: Compute candidates
+        id: cands
+        run: |
+          python3 scripts/licence-gate.py --candidates \
+            "${{ steps.ctx.outputs.base_sha }}" "${{ steps.ctx.outputs.head_sha }}" \
+            > /tmp/candidates.txt || true
+          echo "count=$(wc -l < /tmp/candidates.txt | tr -d ' ')" >> "$GITHUB_OUTPUT"
+          cat /tmp/candidates.txt
+
+      - name: Verify the acknowledgement
+        uses: actions/github-script@v7
+        env:
+          PR_NUMBER: ${{ steps.ctx.outputs.number }}
+          HEAD_SHA: ${{ steps.ctx.outputs.head_sha }}
+          PR_AUTHOR: ${{ steps.ctx.outputs.author }}
+        with:
+          script: |
+            const fs = require('fs');
+            const {owner, repo} = context.repo;
+            const number = Number(process.env.PR_NUMBER);
+            const headSha = process.env.HEAD_SHA;
+            const author  = process.env.PR_AUTHOR;
+
+            const candidates = fs.readFileSync('/tmp/candidates.txt', 'utf8')
+              .split('\n').map(s => s.trim()).filter(Boolean);
+
+            const setStatus = async (state, description) => {
+              await github.rest.repos.createCommitStatus({
+                owner, repo, sha: headSha, state,
+                context: 'acknowledgement-gate',
+                description: description.substring(0, 138),
+              });
+              core.info(`${state}: ${description}`);
+              if (state === 'failure') core.setFailed(description);
+            };
+
+            if (candidates.length === 0) {
+              await setStatus('success', 'No replacement candidates detected.');
+              return;
+            }
+
+            // Comment bodies are attacker-controlled. They are only ever read as data
+            // here - never interpolated into a shell - and authorisation is checked
+            // against the collaborator permission API, never author_association, which
+            // reports organisation membership rather than access to this repository.
+            const comments = await github.paginate(github.rest.issues.listComments,
+              {owner, repo, issue_number: number, per_page: 100});
+
+            const acks = comments.filter(c => /^\s*example-log:/mi.test(c.body || ''));
+            if (acks.length === 0) {
+              await setStatus('pending',
+                `${candidates.length} candidate(s) await a reviewer disposition.`);
+              return;
+            }
+
+            const ack = acks[acks.length - 1];
+            const who = ack.user.login;
+
+            if (who === author) {
+              await setStatus('failure',
+                `Disposition must come from a reviewer, not the pull request author (${who}).`);
+              return;
+            }
+
+            let perm = 'none';
+            try {
+              const r = await github.rest.repos.getCollaboratorPermissionLevel(
+                {owner, repo, username: who});
+              perm = r.data.permission;
+            } catch (e) { perm = 'none'; }
+            if (!['admin', 'write', 'maintain'].includes(perm)) {
+              await setStatus('failure',
+                `${who} lacks write access; disposition must come from a reviewer.`);
+              return;
+            }
+
+            // Staleness: an acknowledgement made before the current head does not carry
+            // over. Otherwise the bypass is trivial - acknowledge a clean tree, then push.
+            const prAtAck = await github.rest.pulls.listCommits(
+              {owner, repo, pull_number: number, per_page: 250});
+            const shaTimes = new Map(prAtAck.data.map(c =>
+              [c.sha, new Date(c.commit.committer.date).getTime()]));
+            const headTime = shaTimes.get(headSha) || 0;
+            if (new Date(ack.created_at).getTime() < headTime) {
+              await setStatus('failure',
+                `Disposition predates the current head ${headSha.substring(0,9)}; re-confirm.`);
+              return;
+            }
+
+            const body = ack.body;
+            const missing = candidates.filter(p => !body.includes(p));
+            if (missing.length) {
+              await setStatus('failure',
+                `Not dispositioned: ${missing.join(', ')}`);
+              return;
+            }
+
+            await setStatus('success',
+              `${candidates.length} candidate(s) dispositioned by ${who}.`);
