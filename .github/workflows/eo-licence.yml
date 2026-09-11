@@ -1,0 +1,104 @@
+name: Apply licence headers
+
+# Triggered by a human commenting /eo-licence. That command is an ASSERTION -
+# "we wrote these" - which no machine can make. This workflow records the claim,
+# attributes it, and derives the licence from the path. It never decides authorship.
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  apply:
+    if: github.event.issue.pull_request && contains(github.event.comment.body, '/eo-licence')
+    runs-on: ubuntu-latest
+    concurrency:
+      group: eolicence-${{ github.event.issue.number }}
+    steps:
+      - name: Authorise and extract the asserted paths
+        id: ctx
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const {owner, repo} = context.repo;
+            const who = context.payload.comment.user.login;
+            let perm = 'none';
+            try {
+              const r = await github.rest.repos.getCollaboratorPermissionLevel(
+                {owner, repo, username: who});
+              perm = r.data.permission;
+            } catch (e) { perm = 'none'; }
+            if (!['admin','write','maintain'].includes(perm)) {
+              await github.rest.issues.createComment({owner, repo,
+                issue_number: context.issue.number,
+                body: `@${who} — \`/eo-licence\` needs write access.`});
+              core.setFailed('insufficient permission');
+              return;
+            }
+            // Comment text is data, never shell input. Paths go to a file.
+            const body = context.payload.comment.body || '';
+            const line = body.split('\n').find(l => l.includes('/eo-licence')) || '';
+            const paths = line.replace('/eo-licence','').trim().split(/\s+/).filter(Boolean);
+            fs.writeFileSync('/tmp/explicit-paths.txt', paths.join('\n'));
+            const pr = await github.rest.pulls.get(
+              {owner, repo, pull_number: context.issue.number});
+            core.setOutput('ref', pr.data.head.ref);
+            core.setOutput('base_sha', pr.data.base.sha);
+            core.setOutput('same_repo',
+              String(pr.data.head.repo.full_name === `${owner}/${repo}`));
+
+      - name: Refuse forks
+        if: steps.ctx.outputs.same_repo != 'true'
+        run: exit 1
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.ctx.outputs.ref }}
+          fetch-depth: 0
+
+      - name: Apply
+        id: apply
+        working-directory: scripts
+        run: |
+          python3 apply-eo-licence.py \
+            "${{ steps.ctx.outputs.base_sha }}" HEAD > /tmp/report.md
+          cat /tmp/report.md
+
+      - name: Commit if anything changed
+        env:
+          ASSERTED_BY: ${{ github.event.comment.user.login }}
+        run: |
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "nothing to commit"; exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          {
+            echo "chore(license): add licence headers to new files"
+            echo
+            echo "Applied on an explicit assertion of authorship. The licence for"
+            echo "each file follows from its path; the copyright line reflects the"
+            echo "assertion below, which a machine cannot make and did not."
+            echo
+            echo "Authorship-asserted-by: ${ASSERTED_BY}"
+          } > /tmp/msg.txt
+          git commit -s -F /tmp/msg.txt
+          git push origin "HEAD:${{ steps.ctx.outputs.ref }}"
+
+      - name: Report
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const {owner, repo} = context.repo;
+            const who = context.payload.comment.user.login;
+            const body = fs.readFileSync('/tmp/report.md','utf8');
+            await github.rest.issues.createComment({owner, repo,
+              issue_number: context.issue.number,
+              body: `**Authorship asserted by @${who}.**\n\n${body}`});
