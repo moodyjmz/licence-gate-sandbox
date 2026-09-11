@@ -21,6 +21,7 @@ import sys
 NOTICE = "Modified by the Example project."
 HEADER_RE = re.compile(r"(copyright|licensed under)", re.I)
 ASSET_RE = re.compile(r"\.(svg|png|jpg|jpeg|gif|ico|dat|woff2?|ttf)$", re.I)
+SOURCE_RE = re.compile(r"\.(js|ts|py|c|h|cpp|css|less|java|go|rb|sh)$", re.I)
 
 
 def sh(*args):
@@ -85,6 +86,33 @@ def check_a(base, head, modified):
     return missing
 
 
+def check_d(head, added):
+    """New files that need a licence decision.
+
+    Deliberately NOT auto-fixable, unlike check A. A modified file always needs the
+    same notice, so a machine can write it. A new file needs a *copyright holder*,
+    and that depends on where the content came from - which no diff can tell you.
+
+    Stamping new files mechanically is how a vendored third-party asset ends up
+    carrying your copyright. That is not a hypothetical: two icons added to a real
+    repository, named as though they were first-party work, turned out to be
+    unmodified Google Material Symbols. A rule that "new files get our header"
+    would have asserted copyright over someone else's work, in a compliance
+    programme whose whole purpose is not doing that.
+
+    So this check blocks and asks. A human answers.
+    """
+    needing, assets = [], []
+    for p in added:
+        if ASSET_RE.search(p):
+            assets.append(p)
+        elif SOURCE_RE.search(p):
+            content = sh("git", "show", f"{head}:{p}")
+            if content and not HEADER_RE.search("\n".join(content.split("\n")[:40])):
+                needing.append(p)
+    return needing, assets
+
+
 def check_c(added, modified, deleted, renamed):
     """Candidate replacement events. Over-detects by design."""
     cands = []
@@ -118,9 +146,10 @@ def main(argv):
     b = check_b(base, head)
     a = check_a(base, head, modified)
     c = check_c(added, modified, deleted, renamed)
+    d_src, d_assets = check_d(head, added)
 
     out = []
-    blocking = bool(a or b)
+    blocking = bool(a or b or d_src)
 
     if b:
         out.append(f"### Blocking — {len(b)} licence line(s) removed or altered\n")
@@ -136,6 +165,19 @@ def main(argv):
                    "This is auto-fixable.\n")
         for p in a:
             out.append(f"- `{p}`")
+        out.append("")
+
+    if d_src or d_assets:
+        out.append("### New files — a licence decision is needed\n")
+        out.append("**Not auto-fixed, deliberately.** A modified file always needs the same "
+                   "notice, so a machine can add it. A new file needs a copyright holder, "
+                   "and that depends on where the content came from — which no diff can "
+                   "tell you. Stamping new files mechanically is how someone else's work "
+                   "ends up carrying your copyright.\n")
+        for p in d_src:
+            out.append(f"- `{p}` — no licence header. Who wrote this, and which licence applies in this directory?")
+        for p in d_assets:
+            out.append(f"- `{p}` — asset added. Where did it come from? Check it is not a third-party icon set before claiming copyright.")
         out.append("")
 
     if c:
