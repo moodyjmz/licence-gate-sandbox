@@ -6,5 +6,5 @@
  */
 
 export function widget() {
-  return "widget";
+  return "widget v2";
 }
