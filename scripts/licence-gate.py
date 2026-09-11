@@ -19,7 +19,14 @@ import subprocess
 import sys
 
 NOTICE = "Modified by the Example project."
-HEADER_RE = re.compile(r"(copyright|licensed under)", re.I)
+# Deliberately narrow. An earlier, looser pattern matched any prose containing
+# "copyright" or "licensed under" - which meant the gate flagged its own source and
+# would flag any compliance document that quotes a licence line. A header states
+# ownership in a recognisable form; prose about ownership does not.
+HEADER_RE = re.compile(r"(copyright\s*(\(c\)|©|\d{4})|licensed under the)", re.I)
+
+# Tooling and documentation discuss licences without being licensed material.
+IGNORE_RE = re.compile(r"^(scripts/|\.github/|README\.md$|docs?/)")
 ASSET_RE = re.compile(r"\.(svg|png|jpg|jpeg|gif|ico|dat|woff2?|ttf)$", re.I)
 SOURCE_RE = re.compile(r"\.(js|ts|py|c|h|cpp|css|less|java|go|rb|sh)$", re.I)
 
@@ -68,6 +75,8 @@ def check_b(base, head):
         if line.startswith("+++ b/"):
             path = line[6:]
         elif line.startswith("-") and not line.startswith("---"):
+            if path and IGNORE_RE.match(path):
+                continue
             if HEADER_RE.search(line[1:]):
                 violations.append((path, line[1:].strip()))
     return violations
@@ -129,8 +138,35 @@ def check_c(added, modified, deleted, renamed):
     return cands
 
 
+def apply_fix(head, paths):
+    """Append the notice to each file's existing header block. Add-only."""
+    fixed = []
+    for p in paths:
+        try:
+            content = open(p, encoding="utf-8").read()
+        except OSError:
+            continue
+        if NOTICE in content:
+            continue
+        lines = content.split("\n")
+        # insert before the line closing the comment block that holds the header
+        for i, line in enumerate(lines[:40]):
+            if HEADER_RE.search(line):
+                for j in range(i, min(i + 40, len(lines))):
+                    st = lines[j].strip()
+                    if st in ("*/", "-->"):
+                        pref = " * " if st == "*/" else "    * "
+                        lines[j:j] = [f"{pref}{NOTICE}"]
+                        open(p, "w", encoding="utf-8").write("\n".join(lines))
+                        fixed.append(p)
+                        break
+                break
+    return fixed
+
+
 def main(argv):
     candidates_only = "--candidates" in argv
+    fix_mode = "--fix" in argv
     argv = [a for a in argv if not a.startswith("--")]
     if len(argv) != 2:
         print(__doc__.strip())
@@ -140,6 +176,12 @@ def main(argv):
 
     if candidates_only:
         for p, _ in check_c(added, modified, deleted, renamed):
+            print(p)
+        return 0
+
+    if fix_mode:
+        missing = check_a(base, head, modified)
+        for p in apply_fix(head, missing):
             print(p)
         return 0
 
@@ -155,14 +197,20 @@ def main(argv):
         out.append(f"### Blocking — {len(b)} licence line(s) removed or altered\n")
         out.append("A licence has not changed, so no existing licence text may change. "
                    "Add lines; never edit or delete them.\n")
+        out.append("**How to resolve:** restore the original line exactly, then add your "
+                   "notice on a new line beneath it. This cannot be auto-fixed — only you "
+                   "know what the line was meant to say.\n")
         for p, line in b:
             out.append(f"- `{p}`\n  ```\n  - {line}\n  ```")
         out.append("")
 
     if a:
         out.append(f"### Blocking — {len(a)} modified file(s) missing a notice\n")
-        out.append(f"Each needs `{NOTICE}` appended to its existing header block. "
-                   "This is auto-fixable.\n")
+        out.append(f"Each needs this line appended to its existing header block:\n")
+        out.append(f"```\n * {NOTICE}\n```")
+        out.append("**How to resolve:** comment `/auto-fix` on this pull request and it "
+                   "will be applied for you, or add the line by hand. Anyone with write "
+                   "access can trigger it — this is a mechanical fix, not a judgement.\n")
         for p in a:
             out.append(f"- `{p}`")
         out.append("")
@@ -178,7 +226,10 @@ def main(argv):
             out.append(f"- `{p}` — no licence header. Who wrote this, and which licence applies in this directory?")
         for p in d_assets:
             out.append(f"- `{p}` — asset added. Where did it come from? Check it is not a third-party icon set before claiming copyright.")
-        out.append("")
+        out.append("\n**How to resolve:** add the correct header by hand. **`/auto-fix` "
+                   "deliberately will not touch these** — the right copyright holder "
+                   "depends on where the content came from, and guessing is how someone "
+                   "else's work ends up carrying yours.\n")
 
     if c:
         out.append(f"### Needs your decision — {len(c)} candidate(s)\n")
@@ -187,7 +238,9 @@ def main(argv):
                    "answer, including \"no\".\n")
         for p, why in c:
             out.append(f"- `{p}` — {why}")
-        out.append("\nReply with a disposition for each path:\n")
+        out.append("\n**How to resolve:** a reviewer — not the pull request author — "
+                   "replies with a disposition for every path. Use a register ID where it "
+                   "is a replacement, or `not a replacement` where it is not:\n")
         out.append("```\nexample-log:")
         for p, _ in c:
             out.append(f"  {p} -> ")

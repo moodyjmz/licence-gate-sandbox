@@ -1,0 +1,106 @@
+name: Auto-fix
+
+# Triggered by a human commenting /auto-fix. Applies only the mechanical fix - the
+# modification notice, whose content is always the same string. It deliberately does
+# NOT touch new files: the right copyright holder there depends on where the content
+# came from, and a machine guessing that is how someone else's work ends up carrying
+# yours.
+#
+# Anyone with write access may trigger this, author included. That is the difference
+# between this and the replacement disposition: a mechanical fix carries no judgement,
+# so it needs no independent signatory.
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  fix:
+    if: github.event.issue.pull_request && contains(github.event.comment.body, '/auto-fix')
+    runs-on: ubuntu-latest
+    concurrency:
+      group: autofix-${{ github.event.issue.number }}
+      cancel-in-progress: false
+    steps:
+      - name: Check the commenter may do this
+        id: auth
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const {owner, repo} = context.repo;
+            const who = context.payload.comment.user.login;
+            // author_association reports organisation membership, not access to this
+            // repository. Authorise against the collaborator permission API instead.
+            let perm = 'none';
+            try {
+              const r = await github.rest.repos.getCollaboratorPermissionLevel(
+                {owner, repo, username: who});
+              perm = r.data.permission;
+            } catch (e) { perm = 'none'; }
+            if (!['admin', 'write', 'maintain'].includes(perm)) {
+              await github.rest.issues.createComment({owner, repo,
+                issue_number: context.issue.number,
+                body: `@${who} — \`/auto-fix\` needs write access to this repository.`});
+              core.setFailed(`${who} lacks write access`);
+              return;
+            }
+            const pr = await github.rest.pulls.get(
+              {owner, repo, pull_number: context.issue.number});
+            core.setOutput('ref', pr.data.head.ref);
+            core.setOutput('base_sha', pr.data.base.sha);
+            core.setOutput('same_repo',
+              String(pr.data.head.repo.full_name === `${owner}/${repo}`));
+
+      - name: Refuse forks
+        if: steps.auth.outputs.same_repo != 'true'
+        run: |
+          echo "Fork pull requests cannot be written to by this workflow."
+          exit 1
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.auth.outputs.ref }}
+          fetch-depth: 0
+
+      - name: Apply the fix
+        id: fix
+        run: |
+          python3 scripts/licence-gate.py --fix \
+            "${{ steps.auth.outputs.base_sha }}" HEAD > /tmp/fixed.txt
+          echo "count=$(wc -l < /tmp/fixed.txt | tr -d ' ')" >> "$GITHUB_OUTPUT"
+          cat /tmp/fixed.txt
+
+      - name: Commit and push
+        if: steps.fix.outputs.count != '0'
+        env:
+          TRIGGERED_BY: ${{ github.event.comment.user.login }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -s -m "chore(license): add modification notices
+
+Applied mechanically on request. Each notice is appended to an existing
+header block; no existing licence text, copyright line or SPDX tag is
+altered.
+
+Requested-by: ${TRIGGERED_BY}"
+          git push origin "HEAD:${{ steps.auth.outputs.ref }}"
+
+      - name: Report
+        uses: actions/github-script@v7
+        env:
+          COUNT: ${{ steps.fix.outputs.count }}
+        with:
+          script: |
+            const {owner, repo} = context.repo;
+            const n = process.env.COUNT;
+            const body = n === '0'
+              ? 'Nothing to auto-fix — no modified file is missing its notice.'
+              : `Applied the modification notice to ${n} file(s). Nothing existing was altered.\n\nNew files and altered licence lines are **not** auto-fixed; those need a human.`;
+            await github.rest.issues.createComment(
+              {owner, repo, issue_number: context.issue.number, body});
